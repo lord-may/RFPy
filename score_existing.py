@@ -2,8 +2,9 @@
 Score already-scraped CSV files without re-running the browser.
 
 Usage:
-    python score_existing.py                   # score all output/rfps_????-??-??.csv
-    python score_existing.py --file rfps_all.csv   # score a specific file in output/
+    python score_existing.py                              # score all output/bcbids/rfps_????-??-??.csv
+    python score_existing.py --site alberta                # score all output/alberta/rfps_????-??-??.csv
+    python score_existing.py --file rfps_all.csv           # score a specific file in output/<site>/
 """
 
 import argparse
@@ -13,19 +14,22 @@ import pandas as pd
 from matcher.score import LGeoMatcher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--file", type=str, help="Score a specific file in output/ (e.g. rfps_all.csv)")
+parser.add_argument("--site", choices=["bcbids", "alberta"], default="bcbids")
+parser.add_argument("--file", type=str, help="Score a specific file in output/<site>/ (e.g. rfps_all.csv)")
 args = parser.parse_args()
 
+out_dir = f"output/{args.site}"
+
 if args.file:
-    path = os.path.join("output", args.file)
+    path = os.path.join(out_dir, args.file)
     if not os.path.exists(path):
         print(f"ERROR: {path} not found.")
         exit(1)
     files = [path]
 else:
-    files = sorted(glob.glob("output/rfps_????-??-??.csv"))
+    files = sorted(glob.glob(f"{out_dir}/rfps_????-??-??.csv"))
     if not files:
-        print("No CSV files found in output/. Run run.py first.")
+        print(f"No CSV files found in {out_dir}/. Run run.py --site {args.site} first.")
         exit()
 
 matcher = LGeoMatcher()

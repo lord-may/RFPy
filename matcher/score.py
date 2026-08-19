@@ -4,16 +4,19 @@ Relevance scoring for RFP records against LGeo's service profile.
 Every RFP is scored by weighted k-nearest-neighbour similarity, in
 embedding space, to a single pool of labeled example texts: the curated
 seed examples in matcher/profiles.py plus whatever the user has
-hand-labeled in output/rfps_all.csv (the "my assessment" column). There
-is no persisted model and no separate training step — labeling a row in
-rfps_all.csv changes scores the next time this runs. See
-train_classifier.py for an (optional) evaluation of scoring quality
-against current labels.
+hand-labeled across every site's output/<site>/rfps_all.csv. Different
+sites use different label column names (see LABEL_COL_CANDIDATES) and
+different native text columns (see _row_text) -- labels and text from
+every site feed the same shared pool, since relevance is about the type
+of work, not which portal it came from. There is no persisted model and
+no separate training step — labeling a row changes scores the next time
+this runs. See train_classifier.py for an (optional) evaluation of
+scoring quality against current labels.
 """
 
 from __future__ import annotations
 
-import os
+import glob
 from functools import cached_property
 from typing import Any
 
@@ -28,9 +31,47 @@ DEFAULT_THRESHOLD = 0.5  # "majority of similar examples are positive"
 K_NEIGHBORS = 10
 SEED_WEIGHT = 1.0
 REAL_WEIGHT = 2.0  # hand labels outweigh seed examples as they accumulate
-LABEL_COL = "my assessment"
-REAL_LABELS_PATH = "output/bcbids/rfps_all.csv"
 NEAREST_EXAMPLE_MAXLEN = 150
+
+# Different sites' hand-labeled files use different column names for the
+# same thing (bcbids: "my assessment", alberta: "label") -- both are
+# permanent, auto-detected per file, never renamed.
+LABEL_COL_CANDIDATES = ["my assessment", "label"]
+REAL_LABELS_GLOB = "output/*/rfps_all.csv"
+
+
+def _find_label_col(df: pd.DataFrame) -> str | None:
+    for col in LABEL_COL_CANDIDATES:
+        if col in df.columns:
+            return col
+    return None
+
+
+def load_labeled_dataframe() -> pd.DataFrame:
+    """
+    Concatenate hand-labeled rows across every site's rfps_all.csv
+    (output/*/rfps_all.csv) into one DataFrame, with each site's native
+    label column normalized into a single "label" int column (0/1) --
+    on-disk files keep their own column names untouched, this
+    normalization only happens here.
+    """
+    frames = []
+    for path in sorted(glob.glob(REAL_LABELS_GLOB)):
+        try:
+            df = pd.read_csv(path, encoding="latin-1")
+        except Exception:
+            continue
+        col = _find_label_col(df)
+        if col is None:
+            continue
+        df = df[pd.to_numeric(df[col], errors="coerce").notna()].copy()
+        if df.empty:
+            continue
+        df["label"] = pd.to_numeric(df[col]).astype(int)
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["label"])
+    return pd.concat(frames, ignore_index=True)
 
 
 def _row_text(row: dict[str, Any]) -> str:
@@ -39,6 +80,10 @@ def _row_text(row: dict[str, Any]) -> str:
         str(row.get("commodities") or ""),
         str(row.get("type") or ""),
         str(row.get("summary") or ""),
+        str(row.get("title") or ""),
+        str(row.get("description") or ""),
+        str(row.get("category") or ""),
+        str(row.get("commodity_codes") or ""),
     ]))
 
 
@@ -56,26 +101,19 @@ class LGeoMatcher:
         return self._model.encode(texts, normalize_embeddings=True)
 
     def _load_real_examples(self) -> list[tuple[str, int, str | None]]:
-        """Hand-labeled rows from rfps_all.csv as (text, label, opportunity_id)."""
-        if not os.path.exists(REAL_LABELS_PATH):
+        """Hand-labeled rows across every site as (text, label, opportunity_id)."""
+        df = load_labeled_dataframe()
+        if df.empty:
             return []
-        try:
-            df = pd.read_csv(REAL_LABELS_PATH, encoding="latin-1")
-        except Exception:
-            return []
-        if LABEL_COL not in df.columns:
-            return []
-        labeled = df[pd.to_numeric(df[LABEL_COL], errors="coerce").notna()].copy()
-        labeled[LABEL_COL] = pd.to_numeric(labeled[LABEL_COL]).astype(int)
 
         examples: list[tuple[str, int, str | None]] = []
-        for r in labeled.to_dict("records"):
+        for r in df.to_dict("records"):
             text = _row_text(r)
             if not text:
                 continue
             opp_id = r.get("opportunity_id")
             opp_id = None if pd.isna(opp_id) or opp_id == "" else str(opp_id)
-            examples.append((text, int(r[LABEL_COL]), opp_id))
+            examples.append((text, int(r["label"]), opp_id))
         return examples
 
     @cached_property

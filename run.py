@@ -2,8 +2,8 @@
 Entry point for the RFPy scraper + relevance scoring pipeline.
 
 Usage:
-    python run.py                                  # yesterday's listings
-    python run.py --date 2026-06-30                # specific date
+    python run.py                                  # yesterday's listings (bcbids)
+    python run.py --site alberta --date 2026-07-02  # specific date, alberta portal
     python run.py --start-date 2026-06-20          # June 20 through yesterday
     python run.py --start-date 2026-06-20 --end-date 2026-06-30
     python run.py --no-match                       # skip relevance scoring
@@ -16,11 +16,21 @@ from datetime import date
 
 import pandas as pd
 
-from scrapers.bcbids import BCBidsScraper
+SCRAPERS = {
+    "bcbids": "scrapers.bcbids.BCBidsScraper",
+    "alberta": "scrapers.alberta.AlbertaScraper",
+}
+
+
+def _load_scraper(site: str):
+    module_path, class_name = SCRAPERS[site].rsplit(".", 1)
+    module = __import__(module_path, fromlist=[class_name])
+    return getattr(module, class_name)()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--site", choices=sorted(SCRAPERS), default="bcbids")
     parser.add_argument("--date", type=str)
     parser.add_argument("--start-date", type=str)
     parser.add_argument("--end-date", type=str)
@@ -45,7 +55,7 @@ def main() -> None:
         sys.exit(1)
 
     # Scrape
-    scraper = BCBidsScraper()
+    scraper = _load_scraper(args.site)
     results_by_date = scraper.scrape_range(start, end, fetch_details=args.fetch_details)
 
     if not results_by_date:
@@ -58,7 +68,8 @@ def main() -> None:
         from matcher.score import LGeoMatcher
         matcher = LGeoMatcher()
 
-    os.makedirs("output", exist_ok=True)
+    out_dir = f"output/{args.site}"
+    os.makedirs(out_dir, exist_ok=True)
     total = 0
 
     for d in sorted(results_by_date):
@@ -71,7 +82,7 @@ def main() -> None:
             df = pd.DataFrame(rows)
 
         df["scraped_at"] = pd.Timestamp.now().isoformat(timespec="seconds")
-        out_path = f"output/rfps_{d.isoformat()}.csv"
+        out_path = f"{out_dir}/rfps_{d.isoformat()}.csv"
         df.to_csv(out_path, index=False)
 
         print(f"  {d}: {len(rows)} listings → {out_path}")

@@ -1,14 +1,15 @@
 """
-Evaluate the k-NN relevance scorer against current hand labels.
+Evaluate the k-NN relevance scorer against current hand labels, across
+every site (output/*/rfps_all.csv).
 
-Runs leave-one-out validation: each hand-labeled RFP in output/rfps_all.csv
-is scored with its own entry excluded from its neighbour pool (matcher/score.py
-does this automatically via opportunity_id), then compared against the label
-it was actually given. Reports accuracy and ROC-AUC.
+Runs leave-one-out validation: each hand-labeled RFP is scored with its own
+entry excluded from its neighbour pool (matcher/score.py does this
+automatically via opportunity_id), then compared against the label it was
+actually given. Reports accuracy and ROC-AUC.
 
 This does not train or persist a model — matcher/score.py always scores live
-from whatever is currently labeled in rfps_all.csv. Use this script just to
-sanity-check scoring quality after adding labels.
+from whatever is currently labeled. Use this script just to sanity-check
+scoring quality after adding labels.
 
 Usage:
     python train_classifier.py
@@ -17,9 +18,8 @@ Usage:
 import sys
 
 import numpy as np
-import pandas as pd
 
-from matcher.score import LGeoMatcher, LABEL_COL, REAL_LABELS_PATH
+from matcher.score import LGeoMatcher, load_labeled_dataframe
 
 MIN_POSITIVES = 5
 
@@ -36,36 +36,22 @@ def _roc_auc(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def main() -> None:
-    try:
-        df = pd.read_csv(REAL_LABELS_PATH, encoding="latin-1")
-    except FileNotFoundError:
-        print(f"{REAL_LABELS_PATH} not found. Run run.py and combine_output.py first.")
+    df = load_labeled_dataframe()
+    if df.empty:
+        print("No labeled rows found across output/*/rfps_all.csv. Run run.py and combine_output.py first, then add labels.")
         sys.exit(1)
 
-    if LABEL_COL not in df.columns:
-        print(
-            f"No '{LABEL_COL}' column in {REAL_LABELS_PATH}.\n"
-            f"Add a '{LABEL_COL}' column (1=relevant, 0=not relevant) to some rows, then re-run."
-        )
-        sys.exit(1)
-
-    labeled = df[pd.to_numeric(df[LABEL_COL], errors="coerce").notna()].copy()
-    labeled[LABEL_COL] = pd.to_numeric(labeled[LABEL_COL]).astype(int)
-    if labeled.empty:
-        print(f"No labeled rows found. Add values to the '{LABEL_COL}' column first.")
-        sys.exit(1)
-
-    n_pos = int((labeled[LABEL_COL] == 1).sum())
-    n_neg = int((labeled[LABEL_COL] == 0).sum())
-    print(f"Labeled examples: {len(labeled)} total ({n_pos} relevant, {n_neg} not relevant)")
+    n_pos = int((df["label"] == 1).sum())
+    n_neg = int((df["label"] == 0).sum())
+    print(f"Labeled examples: {len(df)} total ({n_pos} relevant, {n_neg} not relevant)")
     if n_pos < MIN_POSITIVES:
         print(f"  Note: fewer than {MIN_POSITIVES} positive examples — evaluation will be noisy.")
 
     print("\nRunning leave-one-out evaluation ...")
     matcher = LGeoMatcher()
-    rows = labeled.to_dict("records")
+    rows = df.to_dict("records")
     predicted = np.array([matcher.score(r)["relevance_score"] for r in rows])
-    actual = labeled[LABEL_COL].to_numpy()
+    actual = df["label"].to_numpy()
 
     predicted_label = (predicted >= 0.5).astype(int)
     accuracy = float((predicted_label == actual).mean())
